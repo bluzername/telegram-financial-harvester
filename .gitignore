@@ -1,0 +1,31 @@
+# Environment variables (contains credentials - NEVER commit)
+.env
+
+# Telethon session files
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output directory (exported markdown files)
+output/
+
+# OS files
+.DS_Store
+Thumbs.db
