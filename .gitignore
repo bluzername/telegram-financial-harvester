@@ -26,6 +26,9 @@ ENV/
 # Output directory (exported markdown files)
 output/
 
+# Pipeline state (tracks last processed message)
+pipeline_state.json
+
 # OS files
 .DS_Store
 Thumbs.db
