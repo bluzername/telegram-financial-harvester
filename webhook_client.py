@@ -2,8 +2,6 @@
 Webhook Client - Sends parsed signals to the checklister politician webhook API.
 """
 
-from dataclasses import asdict
-from typing import Optional
 
 import requests
 

@@ -13,9 +13,8 @@ Installation:
 
 Setup:
     1. Copy .env.example to .env
-    2. Fill in your API_ID, API_HASH, and PHONE_NUMBER
-    3. Edit TARGET_CHANNELS below with your desired channels
-    4. Run: python telegram_export.py
+    2. Fill in your API_ID, API_HASH, PHONE_NUMBER and TARGET_CHANNELS
+    3. Run: python telegram_export.py
 
 On first run, you'll be prompted for the login code sent to your Telegram app.
 If your account has 2FA enabled, you'll also be prompted for your password.
@@ -24,7 +23,7 @@ If your account has 2FA enabled, you'll also be prompted for your password.
 import asyncio
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -47,9 +46,9 @@ from telethon.tl.types import Channel, Chat, User
 # - Channel links: "https://t.me/channelname"
 # - Invite links: "https://t.me/joinchat/xxxxx" or "https://t.me/+xxxxx"
 # - Channel IDs: -1001234567890
-TARGET_CHANNELS = [
-    -1002481698957,  # Channel from web.telegram.org (with -100 prefix for channels)
-]
+# Loaded from the TARGET_CHANNELS environment variable (comma separated) by
+# parse_channel_list(); see .env.example. Leave empty to use the env value.
+TARGET_CHANNELS: list = []
 
 # Date range filter (set to None to include all messages)
 # Example: datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -75,6 +74,23 @@ SESSION_NAME = "telegram_scraper"
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+
+def parse_channel_list(raw: Optional[str]) -> list:
+    """
+    Parse a comma separated TARGET_CHANNELS value into usernames, links or
+    integer channel IDs. Blank entries are ignored.
+    """
+    channels = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            channels.append(int(item))
+        except ValueError:
+            channels.append(item)
+    return channels
 
 
 def sanitize_filename(name: str) -> str:
@@ -163,7 +179,7 @@ def format_message_to_markdown(message, sender_name: str) -> str:
         date_str += "Z" if message.date.utcoffset().total_seconds() == 0 else ""
 
     lines = []
-    lines.append(f"### Message {message.id} \u2013 {date_str}")
+    lines.append(f"### Message {message.id} - {date_str}")
     lines.append("")
 
     # Sender info
@@ -191,10 +207,10 @@ def format_message_to_markdown(message, sender_name: str) -> str:
     return "\n".join(lines)
 
 
-async def get_entity_info(client: TelegramClient, channel) -> tuple[str, str]:
+async def get_entity_info(client: TelegramClient, channel) -> tuple:
     """
     Get the display name and filename for a channel entity.
-    Returns (display_name, filename).
+    Returns (display_name, filename, entity).
     """
     entity = await client.get_entity(channel)
 
@@ -301,9 +317,10 @@ async def main() -> None:
         return
 
     # Check for target channels
-    if not TARGET_CHANNELS:
-        print("Error: No channels specified in TARGET_CHANNELS")
-        print("Edit the TARGET_CHANNELS list at the top of this script")
+    target_channels = TARGET_CHANNELS or parse_channel_list(os.getenv("TARGET_CHANNELS"))
+    if not target_channels:
+        print("Error: No channels specified")
+        print("Set TARGET_CHANNELS in .env (comma separated usernames, links or IDs)")
         return
 
     # Create output directory if it doesn't exist
@@ -328,7 +345,7 @@ async def main() -> None:
         successful = 0
         failed = 0
 
-        for channel in TARGET_CHANNELS:
+        for channel in target_channels:
             try:
                 await export_channel(
                     client=client,

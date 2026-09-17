@@ -26,16 +26,17 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.errors import ChannelPrivateError
 
-from signal_parser import parse_message, ParsedSignal
-from state import get_last_message_id, set_last_message_id, increment_processed_count
+from signal_parser import ParsedSignal, get_model, parse_message
+from state import get_last_message_id, increment_processed_count, set_last_message_id
 from webhook_client import WebhookClient
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Target Telegram channel (from telegram_export.py)
-TARGET_CHANNEL = -1002481698957  # Your channel ID
+# Default Telegram channel ID is read from TARGET_CHANNEL in .env
+# (override per run with --channel)
+DEFAULT_CHANNEL_ENV = "TARGET_CHANNEL"
 
 # Session file for Telegram login
 SESSION_NAME = "telegram_scraper"
@@ -211,13 +212,24 @@ async def main():
     parser.add_argument(
         "--channel",
         type=int,
-        default=TARGET_CHANNEL,
-        help=f"Telegram channel ID (default: {TARGET_CHANNEL})",
+        default=None,
+        help=f"Telegram channel ID (default: {DEFAULT_CHANNEL_ENV} from .env)",
     )
     args = parser.parse_args()
 
     # Load environment variables
     load_dotenv()
+
+    if args.channel is None:
+        raw_channel = os.getenv(DEFAULT_CHANNEL_ENV)
+        if not raw_channel:
+            print(f"Error: pass --channel or set {DEFAULT_CHANNEL_ENV} in .env")
+            sys.exit(1)
+        try:
+            args.channel = int(raw_channel)
+        except ValueError:
+            print(f"Error: {DEFAULT_CHANNEL_ENV} must be an integer channel ID such as -1001234567890")
+            sys.exit(1)
 
     # Validate configuration
     api_id = os.getenv("API_ID")
@@ -252,6 +264,7 @@ async def main():
     # Initialize clients
     telegram_client = TelegramClient(SESSION_NAME, int(api_id), api_hash)
     anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
+    print(f"Model: {get_model()}")
     webhook_client = (
         WebhookClient(webhook_url, webhook_api_key)
         if not args.dry_run and webhook_url and webhook_api_key

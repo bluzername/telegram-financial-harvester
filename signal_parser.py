@@ -1,19 +1,28 @@
 """
-Signal Parser - Uses Claude API to extract structured signals from raw Telegram messages.
+Signal Parser - Uses the Claude API to extract structured signals from raw Telegram messages.
 
 Parses natural language politician trading disclosures into structured data
 that can be sent to the checklister webhook.
+
+The model is read from the CLAUDE_MODEL environment variable and defaults to
+DEFAULT_MODEL. The JSON extraction and validation steps are pure functions so
+they can be unit tested without network access.
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import anthropic
 
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+MAX_TOKENS = 300
+RAW_MESSAGE_LIMIT = 500
 
-@dataclass
+
+@dataclass(frozen=True)
 class ParsedSignal:
     """Structured representation of a politician trading signal."""
 
@@ -52,108 +61,136 @@ Message timestamp: {timestamp}
 Return JSON:"""
 
 
+def build_prompt(message_text: str, timestamp: str) -> str:
+    """
+    Fill the prompt template. Uses replace() rather than str.format() because
+    the template contains literal JSON braces such as {"is_signal": false}.
+    """
+    return PARSE_PROMPT.replace("{message}", message_text).replace("{timestamp}", timestamp)
+
+
+def get_model() -> str:
+    """Model ID to use, from CLAUDE_MODEL or the default."""
+    return os.getenv("CLAUDE_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def extract_json(response_text: str) -> Optional[dict]:
+    """
+    Parse the model output as JSON, tolerating a markdown code fence.
+    Returns None when no JSON object can be found.
+    """
+    text = response_text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def signal_from_data(data: dict, message_text: str, timestamp: str) -> Optional[ParsedSignal]:
+    """
+    Validate the extracted fields and build a ParsedSignal.
+    Returns None when the data is not a usable signal.
+    """
+    if data.get("is_signal") is False:
+        return None
+
+    ticker = data.get("ticker")
+    if not ticker or not isinstance(ticker, str):
+        return None
+
+    transaction_type = str(data.get("transaction_type", "")).upper()
+    if transaction_type not in ("BUY", "SELL"):
+        return None
+
+    signal_date = data.get("signal_date") or timestamp[:10]
+
+    try:
+        confidence = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+
+    return ParsedSignal(
+        ticker=ticker.upper(),
+        politician_name=data.get("politician_name"),
+        transaction_type=transaction_type,
+        amount_range=data.get("amount_range"),
+        signal_date=signal_date,
+        confidence=confidence,
+        raw_message=message_text[:RAW_MESSAGE_LIMIT],
+    )
+
+
+def _response_text(response: Any) -> str:
+    """First text block of a Messages API response."""
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
 def parse_message(
-    client: anthropic.Anthropic, message_text: str, timestamp: str
+    client: anthropic.Anthropic,
+    message_text: str,
+    timestamp: str,
+    model: Optional[str] = None,
 ) -> Optional[ParsedSignal]:
     """
-    Parse a Telegram message using Claude API to extract trading signal data.
+    Parse a Telegram message using the Claude API to extract trading signal data.
 
     Args:
         client: Anthropic client instance
         message_text: Raw message text from Telegram
         timestamp: ISO timestamp of the message
+        model: Model ID override (defaults to CLAUDE_MODEL / DEFAULT_MODEL)
 
     Returns:
         ParsedSignal if a valid signal was extracted, None otherwise
     """
     try:
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",  # Fast and cheap for parsing
-            max_tokens=300,
+            model=model or get_model(),
+            max_tokens=MAX_TOKENS,
             messages=[
                 {
                     "role": "user",
-                    "content": PARSE_PROMPT.format(message=message_text, timestamp=timestamp),
+                    "content": build_prompt(message_text, timestamp),
                 }
             ],
         )
-
-        # Extract the text content from response
-        response_text = response.content[0].text.strip()
-
-        # Try to parse as JSON
-        try:
-            data = json.loads(response_text)
-        except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(1))
-            else:
-                print(f"Could not parse response as JSON: {response_text[:200]}")
-                return None
-
-        # Check if it's not a signal
-        if data.get("is_signal") is False:
-            return None
-
-        # Validate required fields
-        ticker = data.get("ticker")
-        if not ticker:
-            return None
-
-        transaction_type = data.get("transaction_type", "").upper()
-        if transaction_type not in ("BUY", "SELL"):
-            return None
-
-        # Extract signal date, fallback to timestamp date
-        signal_date = data.get("signal_date")
-        if not signal_date:
-            # Use the date part of the timestamp
-            signal_date = timestamp[:10]
-
-        return ParsedSignal(
-            ticker=ticker.upper(),
-            politician_name=data.get("politician_name"),
-            transaction_type=transaction_type,
-            amount_range=data.get("amount_range"),
-            signal_date=signal_date,
-            confidence=float(data.get("confidence", 0.5)),
-            raw_message=message_text[:500],  # Truncate for storage
-        )
-
     except anthropic.APIError as e:
         print(f"Anthropic API error: {e}")
         return None
-    except Exception as e:
-        print(f"Error parsing message: {e}")
+
+    response_text = _response_text(response)
+    data = extract_json(response_text)
+    if data is None:
+        print(f"Could not parse response as JSON: {response_text[:200]}")
         return None
+
+    return signal_from_data(data, message_text, timestamp)
 
 
 def batch_parse_messages(
     client: anthropic.Anthropic,
-    messages: list[tuple[str, str]],  # List of (message_text, timestamp)
+    messages: list,  # List of (message_text, timestamp) tuples
     verbose: bool = False,
-) -> list[ParsedSignal]:
+) -> list:
     """
-    Parse multiple messages and return valid signals.
-
-    Args:
-        client: Anthropic client instance
-        messages: List of (message_text, timestamp) tuples
-        verbose: Print progress if True
-
-    Returns:
-        List of parsed signals (only valid ones)
+    Parse multiple messages and return only the valid signals.
     """
     signals = []
-
     for i, (message_text, timestamp) in enumerate(messages):
         if verbose and (i + 1) % 10 == 0:
             print(f"  Parsed {i + 1}/{len(messages)} messages...")
-
         signal = parse_message(client, message_text, timestamp)
         if signal:
             signals.append(signal)
-
     return signals

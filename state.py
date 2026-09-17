@@ -7,7 +7,7 @@ State is persisted to a JSON file between runs.
 
 import json
 import os
-from typing import Dict, Any
+from typing import Any, Dict
 
 STATE_FILE = "pipeline_state.json"
 
