@@ -1,4 +1,4 @@
 telethon>=1.45.0
 python-dotenv>=1.2.4
-anthropic>=2.6.0
+anthropic>=2.9.0
 requests>=2.34.2
